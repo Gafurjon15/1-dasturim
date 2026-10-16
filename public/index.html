@@ -4,7 +4,7 @@
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-    <title>Buxgalter</title>
+    <title>Buxgalter — hisob-kitob</title>
     <style>
         :root {
             --bg: #f2f4fb;
@@ -477,8 +477,8 @@
 <body>
     <div id="app"></div>
     <script>
-        const $ = s => document.querySelector(s), mem = {};
-        const ls = { get(k) { try { return localStorage.getItem(k) } catch (e) { return mem[k] ?? null } }, set(k, v) { try { localStorage.setItem(k, v) } catch (e) { mem[k] = v } }, del(k) { try { localStorage.removeItem(k) } catch (e) { delete mem[k] } } };
+        const $ = s => document.querySelector(s);
+        const ls = { get(k) { try { return localStorage.getItem(k) } catch (e) { return null } }, set(k, v) { try { localStorage.setItem(k, v) } catch (e) { } }, del(k) { try { localStorage.removeItem(k) } catch (e) { } } };
         const fmt = n => (Math.round((n || 0) * 100) / 100).toLocaleString('ru-RU').replace(/[\u00a0\u202f]/g, ' ');
         const esc = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
         const today = () => { const d = new Date(); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0') };
@@ -490,24 +490,84 @@
         };
         const T = { purchases: 'Olingan mahsulot', sales: 'Sotilgan mahsulot', workers: 'Ishchilar', summary: 'Kirdi-chiqdi', extras: `Qo'shimcha summalar`, profile: 'Profil', settings: 'Sozlamalar' };
         const N = [['purchases', '📥', 'Olingan'], ['sales', '📤', 'Sotilgan'], ['workers', '👷', 'Ishchilar'], ['summary', '📊', 'Hisobot'], ['extras', '➕', `Qo'shimcha`]];
-        let user = null, db = null, view = 'purchases', lt = 'phone', wipe = false, sm = { mode: 'd', day: today(), month: today().slice(0, 7) };
+        let user = null, db = null, saveQueue = Promise.resolve(), view = 'purchases', lt = 'phone', authMode = 'login', wipe = false, notice = '', sm = { mode: 'd', day: today(), month: today().slice(0, 7) };
         const emptyDb = () => ({ purchases: [], sales: [], workers: [], extras: [] });
-        function loadDb() { let d = null; try { d = JSON.parse(ls.get('bug_db_' + user.id)) } catch (e) { } db = Object.assign(emptyDb(), d || {}) }
-        const saveDb = () => ls.set('bug_db_' + user.id, JSON.stringify(db));
-        const saveUser = () => ls.set('bug_session', JSON.stringify(user));
+        async function api(url, options = {}) {
+            const response = await fetch(url, {
+                credentials: 'same-origin',
+                ...options,
+                headers: { ...(options.body ? { 'Content-Type': 'application/json' } : {}), ...options.headers }
+            });
+            if (response.status === 204) return null;
+            const result = await response.json();
+            if (!response.ok) throw new Error(result.error || 'So‘rovni bajarib bo‘lmadi.');
+            return result;
+        }
+        async function loadDb() { db = (await api('/api/data')).data }
+        async function saveDb(update) {
+            const operation = saveQueue.then(async () => {
+                const next = typeof update === 'function' ? update(db) : update;
+                db = (await api('/api/data', { method: 'PUT', body: JSON.stringify({ data: next }) })).data;
+            });
+            saveQueue = operation.catch(() => {});
+            await operation;
+        }
+        function legacyIdentifier(method, value) {
+            if (method === 'phone') {
+                let digits = value.replace(/\D/g, '');
+                if (digits.startsWith('998') && digits.length > 9) digits = digits.slice(3);
+                return digits.length === 9 ? `p998${digits}` : null;
+            }
+            const email = value.trim().toLowerCase();
+            return /^[^\s@]+@gmail\.com$/i.test(email) ? `m${email}` : null;
+        }
+        async function migrateLegacyData(method, value) {
+            const oldId = legacyIdentifier(method, value);
+            if (!oldId) return false;
+            try {
+                const oldUser = JSON.parse(ls.get('bug_session') || 'null');
+                if (!oldUser || oldUser.id !== oldId || Object.values(db).some(rows => rows.length)) return false;
+                const previous = JSON.parse(ls.get(`bug_db_${oldId}`) || 'null');
+                if (!previous || typeof previous !== 'object') return false;
+                const imported = { ...emptyDb(), ...previous };
+                await saveDb(imported);
+                ls.del(`bug_db_${oldId}`);
+                ls.del('bug_session');
+                return true;
+            } catch (e) {
+                notice = `Eski ma'lumotlarni import qilib bo'lmadi: ${e.message}`;
+                return false;
+            }
+        }
+        function showNotice(error) { notice = error.message || 'Xatolik yuz berdi.'; render() }
         function applyTheme() { const t = ls.get('bug_theme') || 'auto', r = document.documentElement; if (t === 'auto') r.removeAttribute('data-theme'); else r.setAttribute('data-theme', t) }
         function ini() { return (user.name || user.label || '?').trim().charAt(0).toUpperCase() }
         function loginHTML() {
-            return `<div class="login"><div class="card"><div class="logo">📒</div><h2>Buxgalter</h2><p class="s">Hisob-kitoblaringiz bir joyda</p>
+            return `<div class="login"><div class="card"><div class="logo">📒</div><h2>Buxgalter</h2><p class="s">Hisob-kitoblaringiz barcha qurilmada</p>
+<div class="seg"><button class="${authMode === 'login' ? 'on' : ''}" data-a="auth-mode" data-v="login">Kirish</button><button class="${authMode === 'register' ? 'on' : ''}" data-a="auth-mode" data-v="register">Ro'yxatdan o'tish</button></div>
 <div class="seg"><button class="${lt === 'phone' ? 'on' : ''}" data-a="lt" data-v="phone">📱 Telefon</button><button class="${lt === 'mail' ? 'on' : ''}" data-a="lt" data-v="mail">✉️ Gmail</button></div>
-<label>Ismingiz<input id="ln" type="text" placeholder="Ismingiz"></label>
+${authMode === 'register' ? `<label>Ismingiz<input id="ln" type="text" maxlength="80" placeholder="Ismingiz"></label>` : ''}
 ${lt === 'phone' ? `<label>Telefon raqam<div class="ph"><span>+998</span><input id="lv" type="tel" inputmode="numeric" placeholder="90 123 45 67"></div></label>` : `<label>Gmail manzil<input id="lv" type="email" placeholder="ism@gmail.com"></label>`}
-<p class="msg" id="err"></p><button class="btn" data-a="login">Kirish</button><p class="s" style="margin-top:12px">Ma'lumotlar shu qurilmada saqlanadi</p></div></div>`}
-        function login() {
-            const name = $('#ln').value.trim(), v = $('#lv').value.trim(), e = $('#err'); let id, label;
-            if (lt === 'phone') { let d = v.replace(/\D/g, ''); if (d.startsWith('998') && d.length > 9) d = d.slice(3); if (d.length !== 9) { e.textContent = `Telefon raqamni to'g'ri kiriting (9 ta raqam)`; return } id = 'p998' + d; label = '+998 ' + d }
-            else { if (!/^[^\s@]+@gmail\.com$/i.test(v)) { e.textContent = `Gmail manzilni to'g'ri kiriting (masalan: ism@gmail.com)`; return } id = 'm' + v.toLowerCase(); label = v.toLowerCase() }
-            user = { id, label, name: name || label.split('@')[0] }; saveUser(); loadDb(); view = 'purchases'; render()
+<label>Parol<input id="lp" type="password" minlength="8" maxlength="128" autocomplete="${authMode === 'register' ? 'new-password' : 'current-password'}" placeholder="Kamida 8 ta belgi"></label>
+<p class="msg" id="err">${notice ? esc(notice) : ''}</p><button class="btn" data-a="login">${authMode === 'register' ? "Hisob yaratish" : 'Kirish'}</button><p class="s" style="margin-top:12px">Ma'lumotlar xavfsiz tarzda serverdagi bazada saqlanadi</p></div></div>`}
+        async function login() {
+            const name = authMode === 'register' ? $('#ln').value.trim() : '', value = $('#lv').value.trim(), password = $('#lp').value, error = $('#err');
+            if (authMode === 'register' && !name) { error.textContent = 'Ismingizni kiriting.'; return }
+            if (password.length < 8) { error.textContent = 'Parol kamida 8 ta belgidan iborat bo‘lishi kerak.'; return }
+            try {
+                const result = await api(`/api/auth/${authMode}`, {
+                    method: 'POST',
+                    body: JSON.stringify({ method: lt, value, password, name })
+                });
+                user = result.user;
+                await loadDb();
+                notice = '';
+                await migrateLegacyData(lt, value);
+                view = 'purchases';
+                render();
+            } catch (e) {
+                error.textContent = e.message;
+            }
         }
         function fieldHTML(k, [n, l, ty]) {
             const c = S[k];
@@ -515,7 +575,7 @@ ${lt === 'phone' ? `<label>Telefon raqam<div class="ph"><span>+998</span><input 
             return `<label>${l}<input id="${k}_${n}" type="${ty === 'number' ? 'number' : 'text'}" ${ty === 'number' ? 'inputmode="decimal" min="0" step="any" placeholder="0"' : ''}></label>`
         }
         function listView(k) {
-            const c = S[k], rows = db[k].slice().sort((a, b) => b.d.localeCompare(a.d) || b.id - a.id);
+            const c = S[k], rows = db[k].slice().sort((a, b) => b.d.localeCompare(a.d) || String(b.id).localeCompare(String(a.id)));
             const total = rows.reduce((s, r) => s + (k === 'extras' && r.t === 'out' ? -c.tot(r) : c.tot(r)), 0);
             return `<div class="card"><h3>${c.ic} ${c.add}</h3><div data-form="${k}">${c.f.map(f => fieldHTML(k, f)).join('')}<label>Sana<input id="${k}_d" type="date" value="${today()}"></label>
 <div class="pv"><span>Jami:</span><b><span id="${k}_pv">0</span> so'm</b></div><p class="msg" id="${k}_m"></p><button class="btn" data-a="add" data-k="${k}">Qo'shish</button></div></div>
@@ -524,10 +584,12 @@ ${lt === 'phone' ? `<label>Telefon raqam<div class="ph"><span>+998</span><input 
         }
         function readForm(k) { const o = {}; S[k].f.forEach(([n, , ty]) => { const v = $(`#${k}_${n}`).value; o[n] = ty === 'number' ? (parseFloat(String(v).replace(',', '.')) || 0) : v }); o.d = $(`#${k}_d`).value || today(); return o }
         function updatePv(k) { const el = $(`#${k}_pv`); if (el) el.textContent = fmt(S[k].tot(readForm(k))) }
-        function add(k) {
+        async function add(k) {
             const o = readForm(k), c = S[k];
             if (c.f.some(([n, , ty]) => ty === 'number' ? !(o[n] > 0) : ty === 'text' ? !o[n].trim() : false)) { $(`#${k}_m`).textContent = `Barcha maydonlarni to'g'ri to'ldiring`; return }
-            o.n = o.n.trim(); o.id = Date.now() + Math.floor(Math.random() * 1000); db[k].push(o); saveDb(); render()
+            o.n = o.n.trim(); o.id = crypto.randomUUID();
+            try { await saveDb(current => ({ ...current, [k]: [...current[k], o] })); notice = ''; render() }
+            catch (e) { $(`#${k}_m`).textContent = e.message }
         }
         function calc(fn) {
             const t = (k, f) => db[k].filter(r => fn(r.d) && (!f || f(r))).reduce((s, r) => s + S[k].tot(r), 0);
@@ -555,24 +617,65 @@ ${d ? '' : `<div class="card"><h3>Kunlar bo'yicha</h3><div class="tw"><table><tr
             const t = ls.get('bug_theme') || 'auto';
             return `<div class="card"><h3>🎨 Ko'rinish</h3><div class="seg">${[['auto', 'Avto'], ['light', 'Yorug'], ['dark', 'Qorong\'i']].map(([v, l]) => `<button class="${t === v ? 'on' : ''}" data-a="theme" data-v="${v}">${l}</button>`).join('')}</div></div>
 <div class="card"><h3>🗑 Ma'lumotlar</h3><p class="mu" style="text-align:left">Barcha yozuvlar (olingan, sotilgan, ishchilar, qo'shimcha) o'chiriladi.</p><button class="btn red" data-a="wipe">${wipe ? 'Yana bosing — tasdiqlash' : 'Hammasini o\'chirish'}</button></div>
-<div class="card"><h3>ℹ️ Ilova haqida</h3><p class="mu" style="text-align:left">Buxgalter · valyuta: so'm. Ma'lumotlar shu qurilma brauzerida saqlanadi.</p></div>`}
+<div class="card"><h3>ℹ️ Ilova haqida</h3><p class="mu" style="text-align:left">Buxgalter · valyuta: so'm. Ma'lumotlar hisobingiz bilan serverda saqlanadi.</p></div>`}
         function render() {
             const A = $('#app'); if (!user) { A.innerHTML = loginHTML(); return }
             const b = S[view] ? listView(view) : view === 'summary' ? sumView() : view === 'profile' ? profView() : setView();
-            A.innerHTML = `<header><h1>${T[view]}</h1><div><button class="ib" data-a="nav" data-v="settings">⚙️</button><button class="av" data-a="nav" data-v="profile">${esc(ini())}</button></div></header><main>${b}</main><nav><div>${N.map(([v, i, l]) => `<button class="${view === v ? 'on' : ''}" data-a="nav" data-v="${v}"><span>${i}</span>${l}</button>`).join('')}</div></nav>`
+            A.innerHTML = `<header><h1>${T[view]}</h1><div><button class="ib" data-a="nav" data-v="settings">⚙️</button><button class="av" data-a="nav" data-v="profile">${esc(ini())}</button></div></header><main>${notice ? `<p class="msg">${esc(notice)}</p>` : ''}${b}</main><nav><div>${N.map(([v, i, l]) => `<button class="${view === v ? 'on' : ''}" data-a="nav" data-v="${v}"><span>${i}</span>${l}</button>`).join('')}</div></nav>`
+        }
+        async function removeRecord(k, id) {
+            try {
+                await saveDb(current => ({ ...current, [k]: current[k].filter(r => String(r.id) !== id) }));
+                notice = '';
+                render();
+            } catch (e) { showNotice(e) }
+        }
+        async function logout() {
+            try {
+                await api('/api/auth/logout', { method: 'POST' });
+                user = null; db = null; wipe = false; notice = ''; render();
+            } catch (e) { showNotice(e) }
+        }
+        async function wipeData() {
+            if (!wipe) { wipe = true; render(); return }
+            try {
+                await saveDb(() => emptyDb());
+                wipe = false; notice = ''; render();
+            } catch (e) { showNotice(e) }
+        }
+        async function saveProfile() {
+            const name = $('#pn').value.trim();
+            if (!name) { notice = 'Ismingizni kiriting.'; render(); return }
+            try {
+                user = (await api('/api/profile', { method: 'PATCH', body: JSON.stringify({ name }) })).user;
+                notice = ''; render();
+            } catch (e) { showNotice(e) }
+        }
+        async function initialize() {
+            try {
+                const result = await api('/api/session');
+                user = result.user;
+                if (user) await loadDb();
+                notice = '';
+            } catch (e) {
+                user = null;
+                notice = `Serverga ulanib bo‘lmadi: ${e.message}`;
+            }
+            render();
         }
         document.addEventListener('click', e => {
             const b = e.target.closest('[data-a]'); if (!b) return; const a = b.dataset.a, d = b.dataset;
             if (a === 'nav') { view = d.v; wipe = false; render(); window.scrollTo(0, 0) }
             else if (a === 'lt') { lt = d.v; render() }
+            else if (a === 'auth-mode') { authMode = d.v; notice = ''; render() }
             else if (a === 'login') login();
             else if (a === 'add') add(d.k);
-            else if (a === 'del') { db[d.k] = db[d.k].filter(r => String(r.id) !== d.id); saveDb(); render() }
+            else if (a === 'del') removeRecord(d.k, d.id);
             else if (a === 'mode') { sm.mode = d.v; render() }
-            else if (a === 'logout') { ls.del('bug_session'); user = null; db = null; wipe = false; render() }
-            else if (a === 'wipe') { if (!wipe) { wipe = true } else { db = emptyDb(); saveDb(); wipe = false } render() }
+            else if (a === 'logout') logout();
+            else if (a === 'wipe') wipeData();
             else if (a === 'theme') { ls.set('bug_theme', d.v); applyTheme(); render() }
-            else if (a === 'name') { const v = $('#pn').value.trim(); if (v) { user.name = v; saveUser(); render() } }
+            else if (a === 'name') saveProfile();
         });
         document.addEventListener('input', e => { const f = e.target.closest('[data-form]'); if (f) updatePv(f.dataset.form) });
         document.addEventListener('change', e => {
@@ -580,8 +683,7 @@ ${d ? '' : `<div class="card"><h3>Kunlar bo'yicha</h3><div class="tw"><table><tr
             const f = e.target.closest('[data-form]'); if (f) updatePv(f.dataset.form)
         });
         applyTheme();
-        try { const u = JSON.parse(ls.get('bug_session')); if (u && u.id) { user = u; loadDb() } } catch (e) { }
-        render();
+        initialize();
     </script>
 </body>
 

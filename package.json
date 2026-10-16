@@ -1,0 +1,24 @@
+{
+  "name": "buxgalter-app",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Buxgalter accounting app with a PostgreSQL backend",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js",
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "bcryptjs": "^3.0.2",
+    "dotenv": "^16.4.7",
+    "express": "^5.1.0",
+    "express-rate-limit": "^8.1.0",
+    "helmet": "^8.1.0",
+    "pg": "^8.16.3",
+    "serverless-http": "^4.0.0"
+  }
+}
