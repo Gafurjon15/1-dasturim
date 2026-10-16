@@ -9,23 +9,36 @@ const { rateLimit } = require('express-rate-limit');
 const { Pool } = require('pg');
 const { normalizeIdentifier, validateData } = require('./validation');
 
-const requiredEnv = ['DATABASE_URL'];
-for (const key of requiredEnv) {
-    if (!process.env[key]) throw new Error(`${key} environment variable is required`);
-}
+let pool;
+function getPool() {
+    if (pool) return pool;
+    if (!process.env.DATABASE_URL) {
+        const error = new Error('Netlify environment variables ichida DATABASE_URL sozlanmagan.');
+        error.status = 503;
+        throw error;
+    }
 
-const databaseUrl = new URL(process.env.DATABASE_URL);
-const sslMode = databaseUrl.searchParams.get('sslmode');
-databaseUrl.searchParams.delete('sslmode');
-const useDatabaseSsl = process.env.NODE_ENV === 'production' ||
-    process.env.DATABASE_SSL === 'true' || Boolean(sslMode && sslMode !== 'disable');
-const pool = new Pool({
-    connectionString: databaseUrl.toString(),
-    ssl: useDatabaseSsl ? { rejectUnauthorized: true } : false,
-    max: 3,
-    idleTimeoutMillis: 10000,
-    connectionTimeoutMillis: 10000
-});
+    let databaseUrl;
+    try {
+        databaseUrl = new URL(process.env.DATABASE_URL);
+    } catch (cause) {
+        const error = new Error('DATABASE_URL manzili noto‘g‘ri formatda.');
+        error.status = 503;
+        throw error;
+    }
+    const sslMode = databaseUrl.searchParams.get('sslmode');
+    databaseUrl.searchParams.delete('sslmode');
+    const useDatabaseSsl = process.env.NODE_ENV === 'production' ||
+        process.env.DATABASE_SSL === 'true' || Boolean(sslMode && sslMode !== 'disable');
+    pool = new Pool({
+        connectionString: databaseUrl.toString(),
+        ssl: useDatabaseSsl ? { rejectUnauthorized: true } : false,
+        max: 3,
+        idleTimeoutMillis: 10000,
+        connectionTimeoutMillis: 10000
+    });
+    return pool;
+}
 const app = express();
 const port = Number(process.env.PORT || 3000);
 const sessionLifetimeMs = 30 * 24 * 60 * 60 * 1000;
@@ -73,7 +86,7 @@ async function requireUser(req, res, next) {
     try {
         const token = sessionTokenFromRequest(req);
         if (!token || token.length > 100) throw httpError(401, 'Avval hisobingizga kiring.');
-        const result = await pool.query(
+        const result = await getPool().query(
             `SELECT u.id, u.name, u.label
              FROM app_sessions s
              JOIN app_users u ON u.id = s.user_id
@@ -108,7 +121,7 @@ app.post('/api/auth/register', authLimiter, async (req, res, next) => {
         const { identifier, label } = normalizeIdentifier(method, value);
         const id = crypto.randomUUID();
         const passwordHash = await bcrypt.hash(password, 12);
-        await pool.query(
+        await getPool().query(
             'INSERT INTO app_users (id, identifier, label, name, password_hash) VALUES ($1, $2, $3, $4, $5)',
             [id, identifier, label, name.trim(), passwordHash]
         );
@@ -128,7 +141,7 @@ app.post('/api/auth/login', authLimiter, async (req, res, next) => {
             throw httpError(400, 'Telefon/Gmail va parolni kiriting.');
         }
         const { identifier } = normalizeIdentifier(method, value);
-        const result = await pool.query(
+        const result = await getPool().query(
             'SELECT id, label, name, password_hash FROM app_users WHERE identifier = $1',
             [identifier]
         );
@@ -146,8 +159,8 @@ app.post('/api/auth/login', authLimiter, async (req, res, next) => {
 
 async function createSession(userId) {
     const token = crypto.randomBytes(32).toString('base64url');
-    await pool.query('DELETE FROM app_sessions WHERE expires_at <= now()');
-    await pool.query(
+    await getPool().query('DELETE FROM app_sessions WHERE expires_at <= now()');
+    await getPool().query(
         'INSERT INTO app_sessions (token_hash, user_id, expires_at) VALUES ($1, $2, now() + interval \'30 days\')',
         [tokenHash(token), userId]
     );
@@ -158,7 +171,7 @@ app.get('/api/session', async (req, res, next) => {
     try {
         const token = sessionTokenFromRequest(req);
         if (!token || token.length > 100) return res.json({ user: null });
-        const result = await pool.query(
+        const result = await getPool().query(
             `SELECT u.id, u.name, u.label
              FROM app_sessions s
              JOIN app_users u ON u.id = s.user_id
@@ -175,7 +188,7 @@ app.post('/api/auth/logout', async (req, res, next) => {
     try {
         const token = sessionTokenFromRequest(req);
         if (token && token.length <= 100) {
-            await pool.query('DELETE FROM app_sessions WHERE token_hash = $1', [tokenHash(token)]);
+            await getPool().query('DELETE FROM app_sessions WHERE token_hash = $1', [tokenHash(token)]);
         }
         clearSessionCookie(res);
         res.status(204).end();
@@ -186,7 +199,7 @@ app.post('/api/auth/logout', async (req, res, next) => {
 
 app.get('/api/data', requireUser, async (req, res, next) => {
     try {
-        const result = await pool.query('SELECT data FROM app_user_data WHERE user_id = $1', [req.user.id]);
+        const result = await getPool().query('SELECT data FROM app_user_data WHERE user_id = $1', [req.user.id]);
         res.json({ data: result.rows[0]?.data || emptyData() });
     } catch (error) {
         next(error);
@@ -196,7 +209,7 @@ app.get('/api/data', requireUser, async (req, res, next) => {
 app.put('/api/data', requireUser, async (req, res, next) => {
     try {
         const data = validateData(req.body?.data);
-        await pool.query(
+        await getPool().query(
             `INSERT INTO app_user_data (user_id, data, updated_at)
              VALUES ($1, $2::jsonb, now())
              ON CONFLICT (user_id) DO UPDATE SET data = EXCLUDED.data, updated_at = now()`,
@@ -214,7 +227,7 @@ app.patch('/api/profile', requireUser, async (req, res, next) => {
         if (typeof name !== 'string' || !name.trim() || name.trim().length > 80) {
             throw httpError(400, 'Ismni kiriting (ko‘pi bilan 80 ta belgi).');
         }
-        const result = await pool.query(
+        const result = await getPool().query(
             'UPDATE app_users SET name = $1 WHERE id = $2 RETURNING id, label, name',
             [name.trim(), req.user.id]
         );
@@ -237,7 +250,7 @@ app.use((error, req, res, next) => {
 
 let schemaReady;
 function initializeDatabase() {
-    if (!schemaReady) schemaReady = pool.query(`
+    if (!schemaReady) schemaReady = getPool().query(`
         CREATE TABLE IF NOT EXISTS app_users (
             id text PRIMARY KEY,
             identifier text NOT NULL UNIQUE,
@@ -269,7 +282,7 @@ async function start() {
     await initializeDatabase();
     const server = app.listen(port, () => console.log(`Buxgalter server is running on port ${port}`));
     const shutdown = () => server.close(async () => {
-        await pool.end();
+        if (pool) await pool.end();
         process.exit(0);
     });
     process.on('SIGINT', shutdown);
@@ -283,4 +296,4 @@ if (require.main === module) {
     });
 }
 
-module.exports = { app, initializeDatabase, pool };
+module.exports = { app, initializeDatabase, getPool };

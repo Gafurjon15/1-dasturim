@@ -492,7 +492,118 @@
         const N = [['purchases', '📥', 'Olingan'], ['sales', '📤', 'Sotilgan'], ['workers', '👷', 'Ishchilar'], ['summary', '📊', 'Hisobot'], ['extras', '➕', `Qo'shimcha`]];
         let user = null, db = null, saveQueue = Promise.resolve(), view = 'purchases', lt = 'phone', authMode = 'login', wipe = false, notice = '', sm = { mode: 'd', day: today(), month: today().slice(0, 7) };
         const emptyDb = () => ({ purchases: [], sales: [], workers: [], extras: [] });
+        const isStaticPages = location.hostname.endsWith('.github.io');
+        const staticUsersKey = 'bug_pages_users';
+        const staticSessionKey = 'bug_pages_session';
+        function staticStorageGet(key) {
+            try { return localStorage.getItem(key) }
+            catch (e) { throw new Error('Brauzer xotirasini o‘qib bo‘lmadi. Maxfiy ko‘rish rejimini o‘chirib, qayta urinib ko‘ring.') }
+        }
+        function staticStorageSet(key, value) {
+            try { localStorage.setItem(key, value) }
+            catch (e) { throw new Error('Brauzer xotirasiga saqlab bo‘lmadi. Qurilmada bo‘sh joy borligini tekshiring.') }
+        }
+        function staticJsonGet(key, fallback) {
+            const value = staticStorageGet(key);
+            if (value === null) return fallback;
+            try { return JSON.parse(value) }
+            catch (e) { throw new Error('Brauzerda saqlangan ma’lumot formati buzilgan.') }
+        }
+        async function hashStaticPassword(password, salt) {
+            if (!crypto.subtle) throw new Error('Parolli kirish uchun HTTPS orqali oching.');
+            const key = await crypto.subtle.importKey('raw', new TextEncoder().encode(password), 'PBKDF2', false, ['deriveBits']);
+            const bits = await crypto.subtle.deriveBits(
+                { name: 'PBKDF2', salt, iterations: 150000, hash: 'SHA-256' },
+                key,
+                256
+            );
+            return Array.from(new Uint8Array(bits), byte => byte.toString(16).padStart(2, '0')).join('');
+        }
+        function staticIdentifier(method, value) {
+            if (typeof value !== 'string') throw new Error('Telefon yoki Gmail manzilini kiriting.');
+            if (method === 'phone') {
+                let digits = value.replace(/\D/g, '');
+                if (digits.startsWith('998') && digits.length === 12) digits = digits.slice(3);
+                if (!/^\d{9}$/.test(digits)) throw new Error('Telefon raqam 9 ta raqamdan iborat bo‘lishi kerak.');
+                return { id: `p998${digits}`, label: `+998 ${digits}` };
+            }
+            if (method === 'mail') {
+                const email = value.trim().toLowerCase();
+                if (!/^[^\s@]+@gmail\.com$/.test(email) || email.length > 254) throw new Error('To‘g‘ri Gmail manzilini kiriting.');
+                return { id: `m${email}`, label: email };
+            }
+            throw new Error('Kirish usuli noto‘g‘ri.');
+        }
+        async function staticApi(url, options = {}) {
+            const method = options.method || 'GET';
+            const body = options.body ? JSON.parse(options.body) : {};
+            if (url === '/api/session' && method === 'GET') {
+                return { user: staticJsonGet(staticSessionKey, null) };
+            }
+            if (url === '/api/auth/register' && method === 'POST') {
+                if (typeof body.password !== 'string' || body.password.length < 8 || body.password.length > 128) {
+                    throw new Error('Parol kamida 8 ta belgidan iborat bo‘lishi kerak.');
+                }
+                if (typeof body.name !== 'string' || !body.name.trim() || body.name.trim().length > 80) {
+                    throw new Error('Ismni kiriting (ko‘pi bilan 80 ta belgi).');
+                }
+                const { id, label } = staticIdentifier(body.method, body.value);
+                const users = staticJsonGet(staticUsersKey, {});
+                if (users[id]) throw new Error('Bu telefon yoki Gmail uchun brauzerda hisob mavjud. Kirish bo‘limidan kiring.');
+                const salt = crypto.getRandomValues(new Uint8Array(16));
+                const user = { id, label, name: body.name.trim() };
+                users[id] = {
+                    ...user,
+                    salt: Array.from(salt, byte => byte.toString(16).padStart(2, '0')).join(''),
+                    passwordHash: await hashStaticPassword(body.password, salt)
+                };
+                staticStorageSet(staticUsersKey, JSON.stringify(users));
+                staticStorageSet(staticSessionKey, JSON.stringify(user));
+                return { user };
+            }
+            if (url === '/api/auth/login' && method === 'POST') {
+                if (typeof body.password !== 'string' || body.password.length > 128) throw new Error('Telefon/Gmail va parolni kiriting.');
+                const { id } = staticIdentifier(body.method, body.value);
+                const users = staticJsonGet(staticUsersKey, {});
+                const account = users[id];
+                if (!account || !account.salt || !account.passwordHash) throw new Error('Bu brauzerda hisob topilmadi. Avval ro‘yxatdan o‘ting.');
+                const salt = new Uint8Array(account.salt.match(/.{2}/g).map(byte => parseInt(byte, 16)));
+                if (await hashStaticPassword(body.password, salt) !== account.passwordHash) throw new Error('Telefon/Gmail yoki parol noto‘g‘ri.');
+                const user = { id: account.id, label: account.label, name: account.name };
+                staticStorageSet(staticSessionKey, JSON.stringify(user));
+                return { user };
+            }
+            if (url === '/api/auth/logout' && method === 'POST') {
+                try { localStorage.removeItem(staticSessionKey) }
+                catch (e) { throw new Error('Hisobdan chiqishda brauzer xotirasiga ulanib bo‘lmadi.') }
+                return null;
+            }
+            if (url === '/api/data' && method === 'GET') {
+                const session = staticJsonGet(staticSessionKey, null);
+                if (!session) throw new Error('Avval hisobingizga kiring.');
+                return { data: staticJsonGet(`bug_pages_db_${session.id}`, emptyDb()) };
+            }
+            if (url === '/api/data' && method === 'PUT') {
+                const session = staticJsonGet(staticSessionKey, null);
+                if (!session) throw new Error('Avval hisobingizga kiring.');
+                staticStorageSet(`bug_pages_db_${session.id}`, JSON.stringify(body.data));
+                return { data: body.data };
+            }
+            if (url === '/api/profile' && method === 'PATCH') {
+                const session = staticJsonGet(staticSessionKey, null);
+                if (!session) throw new Error('Avval hisobingizga kiring.');
+                if (typeof body.name !== 'string' || !body.name.trim() || body.name.trim().length > 80) throw new Error('Ismni kiriting.');
+                const users = staticJsonGet(staticUsersKey, {});
+                users[session.id].name = body.name.trim();
+                const user = { id: users[session.id].id, label: users[session.id].label, name: users[session.id].name };
+                staticStorageSet(staticUsersKey, JSON.stringify(users));
+                staticStorageSet(staticSessionKey, JSON.stringify(user));
+                return { user };
+            }
+            throw new Error('GitHub Pages uchun bu API amali mavjud emas.');
+        }
         async function api(url, options = {}) {
+            if (isStaticPages) return staticApi(url, options);
             let response;
             try {
                 response = await fetch(url, {
@@ -504,12 +615,18 @@
                 throw new Error("Backendga ulanib bo'lmadi. Netlify sayt manzilini oching va DATABASE_URL sozlanganini tekshiring.");
             }
             if (response.status === 204) return null;
-            let result;
-            try { result = await response.json() }
-            catch (e) {
-                throw new Error("Backend javobi yaroqsiz. Netlify'da DATABASE_URL ni sozlab, saytni qayta deploy qiling.");
+            const body = await response.text();
+            let result = null;
+            if (body) {
+                try { result = JSON.parse(body) }
+                catch (e) {
+                const type = response.headers.get('content-type') || 'noma’lum';
+                    const detail = body.replace(/\s+/g, ' ').trim().slice(0, 180);
+                    throw new Error(`Netlify API JSON emas javob qaytardi (HTTP ${response.status}, ${type})${detail ? `: ${detail}` : ''}. So'nggi deploy va API routing sozlamalarini tekshiring.`);
+                }
             }
-            if (!response.ok) throw new Error(result.error || 'So‘rovni bajarib bo‘lmadi.');
+            if (!response.ok) throw new Error(result?.error || `So‘rov bajarilmadi (HTTP ${response.status}).`);
+            if (!result || typeof result !== 'object') throw new Error('API kutilgan JSON javobni qaytarmadi.');
             return result;
         }
         async function loadDb() { db = (await api('/api/data')).data }
@@ -540,8 +657,10 @@
                 if (!previous || typeof previous !== 'object') return false;
                 const imported = { ...emptyDb(), ...previous };
                 await saveDb(imported);
-                ls.del(`bug_db_${oldId}`);
-                ls.del('bug_session');
+                try {
+                    localStorage.removeItem(`bug_db_${oldId}`);
+                    localStorage.removeItem('bug_session');
+                } catch (e) { }
                 return true;
             } catch (e) {
                 notice = `Eski ma'lumotlarni import qilib bo'lmadi: ${e.message}`;
@@ -552,13 +671,13 @@
         function applyTheme() { const t = ls.get('bug_theme') || 'auto', r = document.documentElement; if (t === 'auto') r.removeAttribute('data-theme'); else r.setAttribute('data-theme', t) }
         function ini() { return (user.name || user.label || '?').trim().charAt(0).toUpperCase() }
         function loginHTML() {
-            return `<div class="login"><div class="card"><div class="logo">📒</div><h2>Buxgalter</h2><p class="s">Hisob-kitoblaringiz barcha qurilmada</p>
+            return `<div class="login"><div class="card"><div class="logo">📒</div><h2>Buxgalter</h2><p class="s">${isStaticPages ? 'Hisob-kitoblaringiz shu brauzerda saqlanadi' : 'Hisob-kitoblaringiz barcha qurilmada'}</p>
 <div class="seg"><button class="${authMode === 'login' ? 'on' : ''}" data-a="auth-mode" data-v="login">Kirish</button><button class="${authMode === 'register' ? 'on' : ''}" data-a="auth-mode" data-v="register">Ro'yxatdan o'tish</button></div>
 <div class="seg"><button class="${lt === 'phone' ? 'on' : ''}" data-a="lt" data-v="phone">📱 Telefon</button><button class="${lt === 'mail' ? 'on' : ''}" data-a="lt" data-v="mail">✉️ Gmail</button></div>
 ${authMode === 'register' ? `<label>Ismingiz<input id="ln" type="text" maxlength="80" placeholder="Ismingiz"></label>` : ''}
 ${lt === 'phone' ? `<label>Telefon raqam<div class="ph"><span>+998</span><input id="lv" type="tel" inputmode="numeric" placeholder="90 123 45 67"></div></label>` : `<label>Gmail manzil<input id="lv" type="email" placeholder="ism@gmail.com"></label>`}
 <label>Parol<input id="lp" type="password" minlength="8" maxlength="128" autocomplete="${authMode === 'register' ? 'new-password' : 'current-password'}" placeholder="Kamida 8 ta belgi"></label>
-<p class="msg" id="err">${notice ? esc(notice) : ''}</p><button class="btn" data-a="login">${authMode === 'register' ? "Hisob yaratish" : 'Kirish'}</button><p class="s" style="margin-top:12px">Ma'lumotlar xavfsiz tarzda serverdagi bazada saqlanadi</p></div></div>`}
+<p class="msg" id="err">${notice ? esc(notice) : ''}</p><button class="btn" data-a="login">${authMode === 'register' ? "Hisob yaratish" : 'Kirish'}</button><p class="s" style="margin-top:12px">${isStaticPages ? 'Ma’lumotlar ushbu qurilma va brauzerda qoladi. Parol serverda tekshirilmaydi.' : 'Ma’lumotlar serverdagi bazada saqlanadi'}</p></div></div>`}
         async function login() {
             const name = authMode === 'register' ? $('#ln').value.trim() : '', value = $('#lv').value.trim(), password = $('#lp').value, error = $('#err');
             if (authMode === 'register' && !name) { error.textContent = 'Ismingizni kiriting.'; return }
@@ -626,7 +745,7 @@ ${d ? '' : `<div class="card"><h3>Kunlar bo'yicha</h3><div class="tw"><table><tr
             const t = ls.get('bug_theme') || 'auto';
             return `<div class="card"><h3>🎨 Ko'rinish</h3><div class="seg">${[['auto', 'Avto'], ['light', 'Yorug'], ['dark', 'Qorong\'i']].map(([v, l]) => `<button class="${t === v ? 'on' : ''}" data-a="theme" data-v="${v}">${l}</button>`).join('')}</div></div>
 <div class="card"><h3>🗑 Ma'lumotlar</h3><p class="mu" style="text-align:left">Barcha yozuvlar (olingan, sotilgan, ishchilar, qo'shimcha) o'chiriladi.</p><button class="btn red" data-a="wipe">${wipe ? 'Yana bosing — tasdiqlash' : 'Hammasini o\'chirish'}</button></div>
-<div class="card"><h3>ℹ️ Ilova haqida</h3><p class="mu" style="text-align:left">Buxgalter · valyuta: so'm. Ma'lumotlar hisobingiz bilan serverda saqlanadi.</p></div>`}
+<div class="card"><h3>ℹ️ Ilova haqida</h3><p class="mu" style="text-align:left">Buxgalter · valyuta: so'm. ${isStaticPages ? 'Ma’lumotlar faqat shu brauzerda saqlanadi.' : 'Ma’lumotlar hisobingiz bilan serverda saqlanadi.'}</p></div>`}
         function render() {
             const A = $('#app'); if (!user) { A.innerHTML = loginHTML(); return }
             const b = S[view] ? listView(view) : view === 'summary' ? sumView() : view === 'profile' ? profView() : setView();

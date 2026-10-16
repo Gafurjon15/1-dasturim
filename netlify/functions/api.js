@@ -9,10 +9,15 @@ exports.handler = async (event, context) => {
         return await handleRequest(event, context);
     } catch (error) {
         console.error('Netlify API ishga tushmadi:', error);
+        const statusCode = Number.isInteger(error.status) ? error.status : 500;
         return {
-            statusCode: 500,
+            statusCode,
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ error: 'Server yoki ma’lumotlar bazasi sozlanmagan.' })
+            body: JSON.stringify({
+                error: statusCode < 500 || statusCode === 503
+                    ? error.message
+                    : 'API yoki ma’lumotlar bazasi sozlanmagan. Netlify Function loglarini tekshiring.'
+            })
         };
     }
 };
