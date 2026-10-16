@@ -493,13 +493,22 @@
         let user = null, db = null, saveQueue = Promise.resolve(), view = 'purchases', lt = 'phone', authMode = 'login', wipe = false, notice = '', sm = { mode: 'd', day: today(), month: today().slice(0, 7) };
         const emptyDb = () => ({ purchases: [], sales: [], workers: [], extras: [] });
         async function api(url, options = {}) {
-            const response = await fetch(url, {
-                credentials: 'same-origin',
-                ...options,
-                headers: { ...(options.body ? { 'Content-Type': 'application/json' } : {}), ...options.headers }
-            });
+            let response;
+            try {
+                response = await fetch(url, {
+                    credentials: 'same-origin',
+                    ...options,
+                    headers: { ...(options.body ? { 'Content-Type': 'application/json' } : {}), ...options.headers }
+                });
+            } catch (e) {
+                throw new Error("Backendga ulanib bo'lmadi. Netlify sayt manzilini oching va DATABASE_URL sozlanganini tekshiring.");
+            }
             if (response.status === 204) return null;
-            const result = await response.json();
+            let result;
+            try { result = await response.json() }
+            catch (e) {
+                throw new Error("Backend javobi yaroqsiz. Netlify'da DATABASE_URL ni sozlab, saytni qayta deploy qiling.");
+            }
             if (!response.ok) throw new Error(result.error || 'So‘rovni bajarib bo‘lmadi.');
             return result;
         }
