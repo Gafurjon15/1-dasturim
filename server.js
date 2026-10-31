@@ -5,17 +5,28 @@ const path = require('node:path');
 const express = require('express');
 const helmet = require('helmet');
 const bcrypt = require('bcryptjs');
-const { rateLimit } = require('express-rate-limit');
+const { rateLimit, ipKeyGenerator } = require('express-rate-limit');
 const { Pool } = require('pg');
+const { getDatabase, MissingDatabaseConnectionError } = require('@netlify/database');
 const { normalizeIdentifier, validateData } = require('./validation');
 
 let pool;
+// DATABASE_URL berilmagan bo‘lsa, Netlify Database ishlatiladi; uning jadvallari
+// netlify/database/migrations orqali deploy vaqtida yaratiladi.
+const usesNetlifyDatabase = () => !process.env.DATABASE_URL;
+
 function getPool() {
     if (pool) return pool;
-    if (!process.env.DATABASE_URL) {
-        const error = new Error('Netlify environment variables ichida DATABASE_URL sozlanmagan.');
-        error.status = 503;
-        throw error;
+    if (usesNetlifyDatabase()) {
+        try {
+            pool = getDatabase().pool;
+            return pool;
+        } catch (cause) {
+            if (!(cause instanceof MissingDatabaseConnectionError)) throw cause;
+            const error = new Error('Ma’lumotlar bazasi ulanmagan: Netlify Database yoki DATABASE_URL sozlang.');
+            error.status = 503;
+            throw error;
+        }
     }
 
     let databaseUrl;
@@ -106,6 +117,14 @@ const authLimiter = rateLimit({
     limit: 30,
     standardHeaders: 'draft-8',
     legacyHeaders: false,
+    // Netlify Function ichida req.ip bo‘lmasligi mumkin, shuning uchun mijoz IP manzili
+    // Netlify sarlavhasidan olinadi.
+    keyGenerator: req => {
+        const ip = req.headers['x-nf-client-connection-ip'] ||
+            req.headers['x-forwarded-for']?.split(',')[0].trim() || req.ip;
+        return ip ? ipKeyGenerator(ip) : 'unknown';
+    },
+    validate: { ip: false },
     message: { error: 'Juda ko‘p urinish. Birozdan so‘ng qayta urinib ko‘ring.' }
 });
 
@@ -250,6 +269,10 @@ app.use((error, req, res, next) => {
 
 let schemaReady;
 function initializeDatabase() {
+    if (usesNetlifyDatabase()) {
+        getPool();
+        return Promise.resolve();
+    }
     if (!schemaReady) schemaReady = getPool().query(`
         CREATE TABLE IF NOT EXISTS app_users (
             id text PRIMARY KEY,

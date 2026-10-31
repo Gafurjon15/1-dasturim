@@ -6,21 +6,20 @@ varianti backend Function va PostgreSQL orqali qurilmalararo saqlashni qo‘llay
 
 ## Netlify’ga joylashtirish
 
-1. Neon yoki Supabase kabi xizmatda PostgreSQL baza yarating. U bergan
-   PostgreSQL ulanish manzilini oling. Provider serverless ilova uchun pooler
-   manzilini tavsiya qilsa, shuni ishlating.
-2. Loyihani GitHub’ga yuklab, Netlify’da **Add new site → Import an existing
+1. Loyihani GitHub’ga yuklab, Netlify’da **Add new site → Import an existing
    project** orqali repository’ni ulang. `netlify.toml` publish papkasini
    (`public`), backend Function manzilini (`netlify/functions`) hamda `/api/*`
    so‘rovlarini backend function’ga yo‘naltirishni sozlaydi.
-3. Netlify’dagi **Site configuration → Environment variables** bo‘limida:
-   - `DATABASE_URL` — 1-qadamdagi PostgreSQL ulanish manzili;
-   - `NODE_ENV` — `production`
-   
-   qiymatlarini qo‘shing. `DATABASE_URL` maxfiy: uni kodga, GitHub’ga yoki
-   chatga joylamang.
-4. Saytni qayta deploy qiling. Backend jadvallarni bazada avtomatik yaratadi.
-   Netlify bergan sayt manzilini ochib, ro‘yxatdan o‘ting.
+2. Saytni deploy qiling. Ma’lumotlar Netlify Database’da (boshqariladigan
+   PostgreSQL) saqlanadi: baza avtomatik yaratiladi, jadvallar esa
+   `netlify/database/migrations` dagi migratsiyalar orqali deploy vaqtida
+   quriladi. Alohida baza xizmati yoki `DATABASE_URL` kerak emas.
+3. Netlify bergan sayt manzilini ochib, ro‘yxatdan o‘ting.
+
+Boshqa PostgreSQL bazasidan (masalan, Neon yoki Supabase) foydalanmoqchi
+bo‘lsangiz, Environment variables bo‘limida `DATABASE_URL` ni qo‘shing — u
+berilsa, Netlify Database o‘rniga shu baza ishlatiladi va backend jadvallarni
+o‘zi yaratadi. `DATABASE_URL` maxfiy: uni kodga, GitHub’ga yoki chatga joylamang.
 
 Frontend va API bir xil Netlify sayt manzilida ishlashi kerak. `public/index.html` ni
 File Explorer’dan bevosita ochmang — ro‘yxatdan o‘tish uchun backend ham
